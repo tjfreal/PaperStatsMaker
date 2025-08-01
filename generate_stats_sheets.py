@@ -10,7 +10,7 @@ import argparse
 import calendar
 import datetime
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter, landscape
+from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import mm, inch
 from reportlab.platypus import (
     SimpleDocTemplate,
@@ -25,19 +25,30 @@ from reportlab.lib.styles import getSampleStyleSheet
 
 # ------------------ constants section ------------------
 INTERACTION_TYPES = [
-    "3d model",
-    "3d print",
-    "3d scan",
-    "software",
+    "3d services",
+    "video games",
+    "crafts",
     "sewing machines",
     "vinyl cutter",
     "podcasting",
-    "virtual reality",
+    "general library",
+    "other"
+
 ]
-DURATIONS = ["<5", "5-15", ">15"]  # under 10 min, 10–30, over 30
-TIME_BLOCKS = ["8a-10a", "10a-12p", "12p-2p", "2p-4p", "4p-6p"]
-SCRIPT_VERSION = "0.2"
+DURATIONS = [" "]  # under 10 min, 10–30, over 30
+TIME_BLOCKS = ["8a-10a", "10a-12p", "12p-2p", "2p-4p", "4p-6p", "6p-8p"]
+
+SCRIPT_VERSION = "0.4"
 DATE_FMT = "%Y-%m-%d"
+
+# page layout constants
+LEFT_MARGIN = 0.25 * inch
+RIGHT_MARGIN = 0.25 * inch
+TOP_MARGIN = 1 * inch
+BOTTOM_MARGIN = 0.25 * inch
+HEADER_HEIGHT = 16  # pts for header row
+SUBHEADER_HEIGHT = 16  # pts for sub-header row
+NOTES_HEIGHT = 8 * 12  # pts (3 lines at 12pt)
 
 
 # ------------------ helper / layout functions ------------------
@@ -51,9 +62,10 @@ def iso_week_monday(any_date: datetime.date) -> datetime.date:
 class WeekDocTemplate(SimpleDocTemplate):
     """Custom SimpleDocTemplate to inject per-page headers/footers with week mapping."""
 
-    def __init__(self, filename, week_starts, *args, **kwargs):
+    def __init__(self, filename, week_starts, name="Library", *args, **kwargs):
         super().__init__(filename, *args, **kwargs)
         self.week_starts = week_starts  # list of datetime.date for each page
+        self.name = name
         self.gen_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     def handle_pageBegin(self):
@@ -69,101 +81,76 @@ class WeekDocTemplate(SimpleDocTemplate):
             week_start = self.week_starts[page_num - 1]
         except IndexError:
             week_start = self.week_starts[-1]
-        header_text = f"Library – Weekly Stats Sheet – Week of {week_start.strftime(DATE_FMT)}"
+        header_text = f"{self.name} – Daily Stats Sheet – Date {week_start.strftime(DATE_FMT)}"
         footer_text = f"Generated: {self.gen_timestamp} | version: {SCRIPT_VERSION}"
         # header
         canvas.saveState()
         height = self.pagesize[1]
         canvas.setFont("Helvetica-Bold", 11)
-        canvas.drawString(inch * 0.75, letter[1] - 0.65 * inch, header_text)
+        canvas.drawString(inch * 0.75, height - 0.65 * inch, header_text)
         # footer
         canvas.setFont("Helvetica", 8)
         canvas.drawString(inch * 0.75, 0.5 * inch - 4, footer_text)
         canvas.restoreState()
 
 
-def build_week_page(monday: datetime.date) -> Table:
+def build_day_page(day: datetime.date) -> Table:
     """
-    Build the main table for one ISO week starting on monday.
-    Returns a Platypus Table (ready to go).
+    Build the stats table for a single day (portrait, time blocks as columns).
     """
-    # Prepare header rows
-    # Top header: "Time Block" + each interaction type spanning 3 columns
-    first_row = ["Time Block"]
-    for itype in INTERACTION_TYPES:
-        first_row.extend([itype, "", ""])  # placeholders for colspan effect
-    # Second header: durations under each interaction type
-    second_row = [""]  # time block blank
-    for _ in INTERACTION_TYPES:
+    # prepare headers: time axis across columns
+    first_row = ["Interaction Type"]
+    for blk in TIME_BLOCKS:
+        first_row.extend([blk] + [""] * (len(DURATIONS) - 1))
+    second_row = [" "]
+    for _ in TIME_BLOCKS:
         second_row.extend(DURATIONS)
-
     data = [first_row, second_row]
-
-    # Build body: for each day Monday->Sunday, insert a day separator row then blocks
-    for day_offset in range(7):
-        day = monday + datetime.timedelta(days=day_offset)
-        day_label = day.strftime("%A %Y-%m-%d")
-        # day separator full-width
-        sep_row = [day_label] + [""] * (1 + len(INTERACTION_TYPES) * len(DURATIONS) - 1)
-        data.append(sep_row)
-        # 5 blocks: 08-10, 10-12, 12-14, 14-16, 16-18
-        for block_label in TIME_BLOCKS:
-            row = [block_label]
-            # one small square cell per duration per interaction type
-            for _ in INTERACTION_TYPES:
-                for _ in DURATIONS:
-                    row.append("")  # cell to tick
-            data.append(row)
-
-    # Column widths: time block about 15 mm, durations approx 10 mm each
-    time_block_w = 15 * mm
-    duration_w = 10 * mm
-    col_widths = [time_block_w] + [duration_w] * (len(INTERACTION_TYPES) * len(DURATIONS))
-
-    table = Table(data, colWidths=col_widths, repeatRows=2, hAlign="LEFT")
-
-    # Styling: light grid, header shading, alignments, fixed cell size for tick boxes
+    # one row per interaction type
+    for itype in INTERACTION_TYPES:
+        data.append([itype] + [""] * (len(TIME_BLOCKS) * len(DURATIONS)))
+    # compute column widths to fill page width
+    usable_width = letter[0] - (LEFT_MARGIN + RIGHT_MARGIN)
+    time_col_w = 30 * mm
+    total_dur_cols = len(TIME_BLOCKS) * len(DURATIONS)
+    dur_col_w = (usable_width - time_col_w) / total_dur_cols
+    col_widths = [time_col_w] + [dur_col_w] * total_dur_cols
+    # compute custom row heights: header, subheader, then one per interaction
+    body_rows = len(INTERACTION_TYPES)
+    usable_height = (
+        letter[1]
+        - TOP_MARGIN
+        - BOTTOM_MARGIN
+        - HEADER_HEIGHT
+        - SUBHEADER_HEIGHT
+        - NOTES_HEIGHT
+        - (20 * mm)
+    )
+    body_h = usable_height / body_rows
+    row_heights = [HEADER_HEIGHT, SUBHEADER_HEIGHT] + [body_h] * body_rows
+    # build table with custom row heights
+    table = Table(data, colWidths=col_widths, rowHeights=row_heights, repeatRows=2)
     style = TableStyle()
-
-    # span interaction type headers over their duration columns
-    for i in range(len(INTERACTION_TYPES)):
+    # span each time-block header across its duration cols
+    for i in range(len(TIME_BLOCKS)):
         start = 1 + i * len(DURATIONS)
         end = start + len(DURATIONS) - 1
         style.add("SPAN", (start, 0), (end, 0))
-
-    # top header style
+    # header styling
     style.add("FONTNAME", (0, 0), (-1, 1), "Helvetica-Bold")
-    style.add("FONTSIZE", (0, 0), (-1, 1), 8)
+    style.add("FONTSIZE", (0, 0), (-1, 1), 9)
     style.add("ALIGN", (0, 0), (-1, 1), "CENTER")
     style.add("VALIGN", (0, 0), (-1, -1), "MIDDLE")
     style.add("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke)
     style.add("BACKGROUND", (0, 1), (-1, 1), colors.lightgrey)
-
-    # locate row indexes: after headers, every (1 + len(TIME_BLOCKS)) rows per day, starting at index 2
-    for i in range(7):
-        row_index = 2 + i * (1 + len(TIME_BLOCKS))
-        style.add("SPAN", (0, row_index), (len(col_widths) - 1, row_index))
-        style.add("FONTNAME", (0, row_index), (-1, row_index), "Helvetica-Bold")
-        style.add("FONTSIZE", (0, row_index), (-1, row_index), 9)
-        style.add("BACKGROUND", (0, row_index), (-1, row_index), colors.lightgrey)
-        style.add("ALIGN", (0, row_index), (-1, row_index), "LEFT")
-        style.add("LEFTPADDING", (0, row_index), (-1, row_index), 4)
-
-    # Grid for all tick cells: light border
-    style.add("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#BBBBBB"))
-    # Set fixed row heights so squares approximate size: each duration cell ~14pt tall
-    # Can't easily set per-row height here; rely on default with small font to keep compact.
-
-    # Ensure time block column aligns left for labels
-    style.add("ALIGN", (0, 2), (0, -1), "LEFT")
-    style.add("LEFTPADDING", (0, 2), (0, -1), 3)
-
-    # Minimal padding for tick boxes to keep them small
-    style.add("LEFTPADDING", (1, 2), (-1, -1), 2)
-    style.add("RIGHTPADDING", (1, 2), (-1, -1), 2)
-    style.add("TOPPADDING", (1, 2), (-1, -1), 2)
-    style.add("BOTTOMPADDING", (1, 2), (-1, -1), 2)
-
+    # grid for tick cells
+    style.add("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#BBBBBB"))
+    # alternate shading for time-block columns (data rows only)
+    for i in range(len(TIME_BLOCKS)):
+        if i % 2 == 1:
+            start = 1 + i * len(DURATIONS)
+            end = start + len(DURATIONS) - 1
+            style.add("BACKGROUND", (start, 2), (end, -1), colors.lightgrey)
     table.setStyle(style)
     return table
 
@@ -190,6 +177,12 @@ def parse_args():
         default="stats_sheets.pdf",
         help="Output PDF path (default stats_sheets.pdf).",
     )
+    parser.add_argument(
+        "--name",
+        type=str,
+        default="Library",
+        help="Display name for header (default 'Library').",
+    )
     return parser.parse_args()
 
 
@@ -209,23 +202,44 @@ def main():
     # build list of week start dates
     week_starts = [first_monday + datetime.timedelta(weeks=i) for i in range(args.weeks)]
 
+    # expand to individual days, one page each
+    days = []
+    for ws in week_starts:
+        for d in range(7):
+            days.append(ws + datetime.timedelta(days=d))
+
     # set up document with custom header/footer
     doc = WeekDocTemplate(
         args.outfile,
-        week_starts=week_starts,
-        pagesize=landscape(letter),
-        rightMargin=0.4 * inch,
-        leftMargin=0.4 * inch,
+        week_starts=days,
+        name=args.name,
+        pagesize=letter,
+        rightMargin=0.25 * inch,
+        leftMargin=0.25 * inch,
         topMargin=1 * inch,
-        bottomMargin=0.9 * inch,
+        bottomMargin=0.25 * inch,
     )
 
     story = []
 
-    for idx, wk in enumerate(week_starts):
-        tbl = build_week_page(wk)
-        story.append(tbl)
-        if idx != len(week_starts) - 1:
+    for idx, day in enumerate(days):
+        # page table
+        story.append(build_day_page(day))
+        story.append(Spacer(0, 5 * mm))
+        # notes table box
+        usable_width = letter[0] - LEFT_MARGIN - RIGHT_MARGIN
+        notes_tbl = Table(
+            [["Notes:"]],
+            colWidths=[usable_width],
+            rowHeights=[NOTES_HEIGHT],
+        )
+        notes_tbl.setStyle(TableStyle([
+            ("BOX", (0,0), (-1,-1), 0.5, colors.black),
+            ("VALIGN", (0,0), (-1,-1), "TOP"),
+            ("LEFTPADDING", (0,0), (-1,-1), 3),
+        ]))
+        story.append(notes_tbl)
+        if idx != len(days) - 1:
             story.append(PageBreak())
 
     # build PDF
